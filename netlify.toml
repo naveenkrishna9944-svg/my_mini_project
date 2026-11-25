@@ -1,0 +1,18 @@
+[build]
+  command = "npm ci --prefix client && npm run build"
+  publish = "client/dist"
+
+[dev]
+  command = "npm run dev --prefix client -- --strictPort"
+  targetPort = 5173
+  port = 8889
+
+[[redirects]]
+  from = "/products"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/sales"
+  to = "/index.html"
+  status = 200

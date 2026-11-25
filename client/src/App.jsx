@@ -38,12 +38,12 @@ export default function App() {
         {notice && <div className={`notice ${notice.error ? 'error' : ''}`}>{notice.text}</div>}
 
         <Routes>
-          <Route path="/" element={<Dashboard notify={notify} />} />
+          <Route path="/" element={<Dashboard />} />
           <Route path="/products" element={<Products notify={notify} />} />
           <Route path="/sales" element={<Sales notify={notify} />} />
         </Routes>
 
-        <footer>RetailLite · Built with MongoDB, Express, React and Node.js</footer>
+        <footer>RetailLite · Inventory and sales management</footer>
       </main>
     </div>
   );
