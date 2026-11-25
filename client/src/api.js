@@ -4,8 +4,11 @@ async function request(url, options = {}) {
     ...options,
     body: options.body ? JSON.stringify(options.body) : undefined,
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.message || 'Request failed');
+  if (!res.headers.get('content-type')?.includes('application/json')) {
+    throw new Error('The retail API is unavailable. Please try again.');
+  }
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.message || 'Request failed.');
   return data;
 }
 

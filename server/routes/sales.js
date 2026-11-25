@@ -1,58 +1,63 @@
+import { randomUUID } from 'node:crypto';
 import { Router } from 'express';
-import mongoose from 'mongoose';
-import Product from '../models/Product.js';
-import Sale from '../models/Sale.js';
+import { and, desc, eq, gte, sql } from 'drizzle-orm';
+import { getDb } from '../../db/index.ts';
+import { products, sales } from '../../db/schema.ts';
+import { isProductId, isStockCount, numberFromInput } from '../validation.js';
 
 const router = Router();
 
-const pad = (n) => String(n).padStart(2, '0');
 function makeInvoiceNo() {
-  const d = new Date();
-  const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
-  return `INV-${stamp}-${Math.floor(100 + Math.random() * 900)}`;
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-');
+  return `INV-${stamp}-${randomUUID().slice(0, 8).toUpperCase()}`;
 }
 
-// GET /api/sales
+export function formatSale({ productId, productName, quantity, unitPrice, ...sale }) {
+  return {
+    ...sale,
+    items: [{ product: productId, productName, quantity, unitPrice, lineTotal: sale.total }],
+  };
+}
+
 router.get('/', async (req, res, next) => {
   try {
-    res.json(await Sale.find().sort({ createdAt: -1 }));
-  } catch (e) { next(e); }
+    const records = await getDb().select().from(sales).orderBy(desc(sales.createdAt));
+    res.json(records.map(formatSale));
+  } catch (err) { next(err); }
 });
 
-// POST /api/sales  { customerName, productId, quantity }
 router.post('/', async (req, res, next) => {
   try {
-    const { customerName, productId } = req.body;
-    const qty = Number(req.body.quantity);
-    if (!customerName?.trim() || !mongoose.isValidObjectId(productId) || !Number.isInteger(qty) || qty < 1) {
+    const body = req.body ?? {};
+    const customerName = typeof body.customerName === 'string' ? body.customerName.trim() : '';
+    const { productId } = body;
+    const quantity = numberFromInput(body.quantity);
+    if (!customerName || customerName.length > 100 || !isProductId(productId) || !isStockCount(quantity) || quantity < 1) {
       return res.status(400).json({ message: 'Please provide valid sale details.' });
     }
 
-    // Atomic stock deduction: only succeeds if enough stock exists, so two
-    // simultaneous sales can never oversell (works on a standalone MongoDB,
-    // no replica set / transactions needed).
-    const product = await Product.findOneAndUpdate(
-      { _id: productId, quantity: { $gte: qty } },
-      { $inc: { quantity: -qty } },
-      { new: true }
-    );
-    if (!product) return res.status(400).json({ message: 'Product not found or insufficient stock.' });
+    const sale = await getDb().transaction(async (tx) => {
+      const [product] = await tx.update(products)
+        .set({ quantity: sql`${products.quantity} - ${quantity}` })
+        .where(and(eq(products._id, productId), gte(products.quantity, quantity)))
+        .returning({ name: products.name, price: products.price });
+      if (!product) return null;
 
-    try {
-      const total = Math.round(product.price * qty * 100) / 100;
-      const sale = await Sale.create({
+      const [record] = await tx.insert(sales).values({
         invoiceNo: makeInvoiceNo(),
         customerName,
-        items: [{ product: product._id, productName: product.name, quantity: qty, unitPrice: product.price, lineTotal: total }],
-        total,
-      });
-      res.status(201).json({ message: `Sale completed. Invoice: ${sale.invoiceNo}`, sale });
-    } catch (err) {
-      // Roll back the stock if saving the sale failed
-      await Product.updateOne({ _id: productId }, { $inc: { quantity: qty } });
-      throw err;
-    }
-  } catch (e) { next(e); }
+        productId,
+        productName: product.name,
+        quantity,
+        unitPrice: product.price,
+        total: sql`${product.price}::numeric * ${quantity}::integer`,
+      }).returning();
+      return record;
+    });
+
+    if (!sale) return res.status(400).json({ message: 'Product not found or insufficient stock.' });
+    res.status(201).json({ message: `Sale completed. Invoice: ${sale.invoiceNo}`, sale: formatSale(sale) });
+  } catch (err) { next(err); }
 });
 
 export default router;
